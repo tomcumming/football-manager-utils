@@ -1,7 +1,8 @@
 module FM.Roles
-  ( advancedForward,
+  ( RoleName (..),
     Role (..),
     Ability (..),
+    role,
     roleAbility,
     weightedPercentile,
   )
@@ -12,6 +13,16 @@ import Data.List (sortOn)
 import Data.Map qualified as M
 import Data.Set qualified as S
 import FM.Attrs (Attr (..), PlayerAttrs)
+
+data RoleName
+  = AFa
+  | CBd
+  | CMd
+  | CMs
+  | DLFs
+  | FBs
+  | Ws
+  deriving (Eq, Ord, Show)
 
 data Role = Role
   { rolePrim :: S.Set Attr,
@@ -57,9 +68,40 @@ weightedPercentile Ability {..} sndWgt p = go (p * totalWeight) sortedWeights
       (w, _) : x : xs | w < remaining -> go (remaining - w) (x : xs)
       (_, score) : _ -> score
 
-advancedForward :: Role
-advancedForward =
-  Role
-    { rolePrim = S.fromList [Dri, Fin, Fir, Tec, Cmp, OtB, Acc],
-      roleSnd = S.fromList [Pas, Ant, Dec, Wor, Agi, Bal, Pac, Sta]
-    }
+role :: RoleName -> Role
+role = \case
+  AFa ->
+    Role
+      { rolePrim = S.fromList [Dri, Fin, Fir, Tec, Cmp, OtB, Acc],
+        roleSnd = S.fromList [Pas, Ant, Dec, Wor, Agi, Bal, Pac, Sta]
+      }
+  DLFs ->
+    Role
+      { rolePrim = S.fromList [Fir, Pas, Tec, Cmp, Dec, OtB, Tea],
+        roleSnd = S.fromList [Fin, Ant, Fla, Vis, Bal, Str]
+      }
+  FBs ->
+    Role
+      { rolePrim = S.fromList [Mar, Tck, Ant, Cnt, Pos, Tea],
+        roleSnd = S.fromList [Cro, Dri, Pas, Tec, Dec, Wor, Pac, Sta]
+      }
+  CBd ->
+    Role
+      { rolePrim = S.fromList [Hea, Mar, Tck, Pos, Jum, Str],
+        roleSnd = S.fromList [Agg, Ant, Bra, Cmp, Cnt, Dec, Pac]
+      }
+  Ws ->
+    Role
+      { rolePrim = S.fromList [Cro, Dri, Tec, Acc, Agg],
+        roleSnd = S.fromList [Fir, Pas, OtB, Wor, Bal, Pac, Sta]
+      }
+  CMd ->
+    Role
+      { rolePrim = S.fromList [Tck, Cnt, Dec, Pos, Tea],
+        roleSnd = S.fromList [Fir, Mar, Pas, Tec, Agg, Ant, Cmp, Wor, Sta]
+      }
+  CMs ->
+    Role
+      { rolePrim = S.fromList [Fir, Pas, Tck, Dec, Tea],
+        roleSnd = S.fromList [Tec, Ant, Cmp, Cnt, OtB, Vis, Wor, Sta]
+      }

@@ -7,12 +7,14 @@ import Data.Tuple (swap)
 type PlayerAttrs = M.Map Attr Integer
 
 data Attr
-  = Wor -- ^ Work Rate
+  = -- | Work Rate
+    Wor
   | Vis
   | Thr
   | Tec
   | Tea
-  | Tck
+  | -- | Tackling
+    Tck
   | Str
   | Sta
   | TRO
@@ -43,7 +45,8 @@ data Attr
   | Dec
   | Cro
   | Cor
-  | Cnt
+  | -- | Concentration
+    Cnt
   | Cmp
   | Com
   | Cmd

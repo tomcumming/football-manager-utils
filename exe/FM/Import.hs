@@ -1,4 +1,4 @@
-module FM.Import (readPlayerAttrsTable) where
+module FM.Import (PlayerAttrsTbl, readPlayerAttrsTable) where
 
 import Control.Category ((>>>))
 import Control.Monad (when)

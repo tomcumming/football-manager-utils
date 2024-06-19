@@ -5,36 +5,36 @@ import Data.List (intersperse)
 import Data.Map qualified as M
 import Data.Text qualified as T
 import Data.Text.IO qualified as T
-import FM.Import (readPlayerAttrsTable)
-import FM.Roles (Ability (..), Role (..), advancedForward, roleAbility, weightedPercentile)
+import FM.Import (PlayerAttrsTbl, readPlayerAttrsTable)
+import FM.Roles (Ability (..), Role (..), RoleName (..), role, roleAbility, weightedPercentile)
 
 main :: IO ()
 main = do
   inputTxt <- T.getContents
   xs <- readPlayerAttrsTable inputTxt
-  let r = advancedForward
-  afs <- traverse (roleAbility r) xs
-  let percentiles = [0.25, 0.5, 0.75]
-  putStrLn $ makeHeaderRow percentiles r
-  forM_ (M.toList afs) $ \(name, ab) ->
-    putStrLn $ makePlayerRow percentiles name ab
+  let rn = AFa
+  rows <- makeRoleTable rn [0.25, 0.5, 75] xs
+  forM_ rows $ \row -> putStrLn $ fold $ intersperse "\t" row
 
-makeHeaderRow :: [Double] -> Role -> String
-makeHeaderRow percentiles Role {..} =
-  fold $
-    intersperse "\t" $
+makeRoleTable :: (MonadFail m) => RoleName -> [Double] -> PlayerAttrsTbl -> m [[String]]
+makeRoleTable rn percentiles pat = do
+  pars <- traverse (roleAbility r) pat
+  pure $ makeHeaderRow : (uncurry makePlayerRow <$> M.toList pars)
+  where
+    r = role rn
+
+    makeHeaderRow :: [String]
+    makeHeaderRow =
       "Name"
         : ""
-        : (show <$> toList rolePrim)
+        : (show <$> toList (rolePrim r))
           <> [""]
-          <> (show <$> toList roleSnd)
+          <> (show <$> toList (roleSnd r))
           <> [""]
           <> (show <$> percentiles)
 
-makePlayerRow :: [Double] -> T.Text -> Ability -> String
-makePlayerRow percentiles name ab@Ability {..} =
-  fold $
-    intersperse "\t" $
+    makePlayerRow :: T.Text -> Ability -> [String]
+    makePlayerRow name ab@Ability {..} =
       T.unpack name
         : ""
         : (show <$> M.elems abilPrim)
