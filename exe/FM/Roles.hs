@@ -21,8 +21,9 @@ data RoleName
   | CMs
   | DLFs
   | FBs
+  | IFs
   | Ws
-  deriving (Eq, Ord, Show)
+  deriving (Eq, Ord, Enum, Bounded, Show)
 
 data Role = Role
   { rolePrim :: S.Set Attr,
@@ -104,4 +105,9 @@ role = \case
     Role
       { rolePrim = S.fromList [Fir, Pas, Tck, Dec, Tea],
         roleSnd = S.fromList [Tec, Ant, Cmp, Cnt, OtB, Vis, Wor, Sta]
+      }
+  IFs -> 
+    Role
+      { rolePrim = S.fromList [Dri, Fin, Fir, Tec, OtB, Acc, Agi],
+        roleSnd = S.fromList [Lon, Pas, Ant, Cmp, Fla, Vis, Wor, Bal, Pac, Sta]
       }
