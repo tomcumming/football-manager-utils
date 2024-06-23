@@ -1,5 +1,6 @@
 module Main where
 
+import Control.Monad (guard)
 import Data.Foldable (fold, forM_, toList)
 import Data.List (intersperse)
 import Data.Map qualified as M
@@ -7,28 +8,51 @@ import Data.Text qualified as T
 import Data.Text.IO qualified as T
 import FM.Attrs (PlayerAttrs)
 import FM.Import (PlayerAttrsTbl, readPlayerAttrsTable)
-import FM.Roles (Ability (..), Role (..), RoleName (..), role, roleAbility, weightedPercentile, weightedMean)
+import FM.Position qualified as P
+import FM.Roles (Ability (..), Role (..), RoleName (..), role, roleAbility, weightedMean, weightedPercentile)
 
-relevantRoles :: [RoleName]
+relevantRoles :: [(P.Pos, RoleName)]
 -- relevantRoles = [minBound..]
-relevantRoles = [AFa, DLFs, Wa, Ws, CMs, CMd, FBa, FBs, CBd]
+relevantRoles =
+  [ (P.Pos P.ST P.C, AFa),
+    (P.Pos P.ST P.C, DLFs),
+    (P.Pos P.AM P.L, Ws),
+    (P.Pos P.AM P.R, Ws),
+    (P.Pos P.M P.C, CMs),
+    (P.Pos P.M P.C, CMd),
+    (P.Pos P.D P.L, FBs),
+    (P.Pos P.D P.R, FBs),
+    (P.Pos P.D P.C, CBd)
+  ]
 
 main :: IO ()
 main = do
   inputTxt <- T.getContents
   pat <- readPlayerAttrsTable inputTxt
-  -- let rn = CMs
-  -- rows <- makeRoleTable rn [1 / 3, 2 / 3] pat
-  -- rows <- makeRolesPercentileTable (1/3) pat
-  rows <- makeRolesMeanTable (1/2) pat
+  let rn = CMs
+  _ <- makeRoleTable (P.Pos P.M P.C) rn [1 / 3, 2 / 3] pat
+  _ <- makeRolesPercentileTable (1 / 3) pat
+  rows <- makeRolesMeanTable (1 / 2) pat
   forM_ rows $ \row -> putStrLn $ fold $ intersperse "\t" row
 
-makeRoleTable :: (MonadFail m) => RoleName -> [Double] -> PlayerAttrsTbl -> m [[String]]
-makeRoleTable rn percentiles pat = do
-  pars <- traverse (roleAbility r) pat
+makeRoleTable ::
+  forall m.
+  (MonadFail m) =>
+  P.Pos ->
+  RoleName ->
+  [Double] ->
+  PlayerAttrsTbl ->
+  m [[String]]
+makeRoleTable pos rn percentiles pat = do
+  pars <- traverse (uncurry foo) pat
   pure $ makeHeaderRow : (uncurry makePlayerRow <$> M.toList pars)
   where
     r = role rn
+
+    foo :: P.Poss -> PlayerAttrs -> m (Maybe Ability)
+    foo poss pats
+      | poss `P.canPlay` pos = Just <$> roleAbility r pats
+      | otherwise = pure Nothing
 
     makeHeaderRow :: [String]
     makeHeaderRow =
@@ -40,44 +64,50 @@ makeRoleTable rn percentiles pat = do
           <> [""]
           <> (show <$> percentiles)
 
-    makePlayerRow :: T.Text -> Ability -> [String]
-    makePlayerRow name ab@Ability {..} =
-      T.unpack name
-        : ""
-        : (show <$> M.elems abilPrim)
-          <> [""]
-          <> (show <$> M.elems abilSnd)
-          <> [""]
-          <> (show . (\p -> weightedPercentile (1/3) p ab) <$> percentiles)
+    makePlayerRow :: T.Text -> Maybe Ability -> [String]
+    makePlayerRow name = \case
+      Nothing ->
+        T.unpack name
+          : ""
+          : ("" <$ toList (rolePrim r))
+            <> [""]
+            <> ("" <$ toList (roleSnd r))
+            <> [""]
+            <> ("" <$ percentiles)
+      Just ab@Ability {..} ->
+        T.unpack name
+          : ""
+          : (show <$> M.elems abilPrim)
+            <> [""]
+            <> (show <$> M.elems abilSnd)
+            <> [""]
+            <> (show . (\p -> weightedPercentile (1 / 3) p ab) <$> percentiles)
 
 makeRolesPercentileTable :: forall m. (MonadFail m) => Double -> PlayerAttrsTbl -> m [[String]]
-makeRolesPercentileTable percentile pat = do
-  pabs <- traverse playerPs pat
-  pure $ headerRow : (uncurry playerRow <$> M.toList pabs)
-  where
-    headerRow :: [String]
-    headerRow = "Name" : "" : (show <$> relevantRoles)
-
-    playerPs :: PlayerAttrs -> m [Integer]
-    playerPs pas = do
-      abils <- traverse (\rn -> roleAbility (role rn) pas) relevantRoles
-      pure $ weightedPercentile (1 / 3) percentile <$> abils
-
-    playerRow :: T.Text -> [Integer] -> [String]
-    playerRow name abils = T.unpack name : "" : (show <$> abils)
+makeRolesPercentileTable percentile =
+  makeRolesTable (realToFrac . weightedPercentile (1 / 3) percentile)
 
 makeRolesMeanTable :: forall m. (MonadFail m) => Double -> PlayerAttrsTbl -> m [[String]]
-makeRolesMeanTable sndWgt pat = do
+makeRolesMeanTable sndWgt = makeRolesTable (weightedMean sndWgt)
+
+makeRolesTable :: forall m. (MonadFail m) => (Ability -> Double) -> PlayerAttrsTbl -> m [[String]]
+makeRolesTable calcRoleAbil pat = do
   pabs <- traverse playerPs pat
   pure $ headerRow : (uncurry playerRow <$> M.toList pabs)
   where
     headerRow :: [String]
-    headerRow = "Name" : "" : (show <$> relevantRoles)
+    headerRow = "Name" : "" : ((\(p, r) -> show p <> "-" <> show r) <$> relevantRoles)
 
-    playerPs :: PlayerAttrs -> m [Double]
-    playerPs pas = do
-      abils <- traverse (\rn -> roleAbility (role rn) pas) relevantRoles
-      pure $ weightedMean sndWgt <$> abils
+    playerPs :: (P.Poss, PlayerAttrs) -> m [Maybe Double]
+    playerPs (poss, pas) = traverse (playerRoleAbility poss pas) relevantRoles
 
-    playerRow :: T.Text -> [Double] -> [String]
-    playerRow name abils = T.unpack name : "" : (show <$> abils)
+    playerRoleAbility :: P.Poss -> PlayerAttrs -> (P.Pos, RoleName) -> m (Maybe Double)
+    playerRoleAbility poss pas (pos, rn) = do
+      let r = role rn
+      ab <- roleAbility r pas
+      pure $ do
+        guard $ poss `P.canPlay` pos
+        Just $ calcRoleAbil ab
+
+    playerRow :: T.Text -> [Maybe Double] -> [String]
+    playerRow name abils = T.unpack name : "" : (maybe "" show <$> abils)

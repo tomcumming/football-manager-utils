@@ -20,4 +20,5 @@ executable football-manager-utils
     other-modules:
         FM.Attrs
         FM.Import
+        FM.Position
         FM.Roles

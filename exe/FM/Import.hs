@@ -7,10 +7,11 @@ import Data.Maybe (catMaybes, maybeToList)
 import Data.Text (Text)
 import Data.Text qualified as T
 import FM.Attrs (Attr, PlayerAttrs, lblAttr)
+import FM.Position (Poss, readPoss)
 import Text.Read (readMaybe)
 import Text.XML.Light qualified as Xml
 
-type PlayerAttrsTbl = M.Map Text PlayerAttrs
+type PlayerAttrsTbl = M.Map Text (Poss, PlayerAttrs)
 
 readPlayerAttrsTable :: forall m. (MonadFail m) => Text -> m PlayerAttrsTbl
 readPlayerAttrsTable =
@@ -28,8 +29,15 @@ readPlayerAttrsTable =
             let hmap = headerMap trh
             tr <- trs
             -- TODO ensure name is first col
-            tds@(tdName : _) <- pure $ Xml.elChildren tr
+            -- TODO ensure position is second col
+            tds@(tdName : tdPos : _) <- pure $ Xml.elChildren tr
             let name = T.pack $ Xml.strContent tdName
+            let possStr = Xml.strContent tdPos
+            let poss =
+                  maybe
+                    (error $ "Could not parse: " <> possStr)
+                    id
+                    $ readPoss possStr
             let attrs =
                   M.fromList $
                     catMaybes $
@@ -41,7 +49,7 @@ readPlayerAttrsTable =
                         )
                         hmap
                         tds
-            pure (name, attrs)
+            pure (name, (poss, attrs))
       when (M.null attrTbl) $ fail "No entries found in table"
       pure attrTbl
 
