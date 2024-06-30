@@ -3,6 +3,7 @@ module FM.Position
     Col (..),
     Pos (..),
     Poss,
+    positions,
     canPlay,
     showPoss,
     readPoss,
@@ -27,6 +28,15 @@ data Pos = Pos
     posCol :: Col
   }
   deriving (Eq, Ord)
+
+positions :: [[Pos]]
+positions =
+  [ [Pos D L, Pos D C, Pos D R],
+    [Pos WB L, Pos DM C, Pos WB R],
+    [Pos M L, Pos M C, Pos M R],
+    [Pos AM L, Pos AM C, Pos AM R],
+    [Pos ST C]
+  ]
 
 type Poss = S.Set Pos
 

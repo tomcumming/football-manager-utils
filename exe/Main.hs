@@ -3,36 +3,40 @@ module Main where
 import Control.Monad (guard)
 import Data.Foldable (fold, forM_, toList)
 import Data.List (intersperse)
+import Data.List qualified as L
 import Data.Map qualified as M
+import Data.Maybe (fromMaybe)
+import Data.Set qualified as S
 import Data.Text qualified as T
 import Data.Text.IO qualified as T
 import FM.Attrs (PlayerAttrs)
 import FM.Import (PlayerAttrsTbl, readPlayerAttrsTable)
 import FM.Position qualified as P
-import FM.Roles (Ability (..), Role (..), RoleName (..), role, roleAbility, weightedMean, weightedPercentile)
+import FM.Roles (Ability (..), Role (..), RoleName, positionRoles, role, roleAbility, weightedMean, weightedPercentile)
+import FM.Roles qualified as RN
 
-relevantRoles :: [(P.Pos, RoleName)]
--- relevantRoles = [minBound..]
-relevantRoles =
-  [ (P.Pos P.ST P.C, AFa),
-    (P.Pos P.ST P.C, DLFs),
-    (P.Pos P.AM P.L, Ws),
-    (P.Pos P.AM P.R, Ws),
-    (P.Pos P.M P.C, CMs),
-    (P.Pos P.M P.C, CMd),
-    (P.Pos P.D P.L, FBs),
-    (P.Pos P.D P.R, FBs),
-    (P.Pos P.D P.C, CBd)
-  ]
+relevantRoles :: [RoleName]
+relevantRoles = [minBound ..]
+
+-- relevantRoles =
+--   [ RN.DFBs
+--   , RN.DCDd
+--   , RN.MCMd
+--   , RN.MCMs
+--   , RN.MWs
+--   , RN.ADLFs
+--   , RN.AAFa
+--   ]
 
 main :: IO ()
 main = do
   inputTxt <- T.getContents
   pat <- readPlayerAttrsTable inputTxt
-  let rn = CMs
-  _ <- makeRoleTable (P.Pos P.M P.C) rn [1 / 3, 2 / 3] pat
-  _ <- makeRolesPercentileTable (1 / 3) pat
+  let rn = RN.DCDd
+  _rows <- makeRoleTable (P.Pos P.D P.C) rn [1 / 3, 2 / 3] pat
+  _rows <- makeRolesPercentileTable (1 / 2) pat
   rows <- makeRolesMeanTable (1 / 2) pat
+  _rows <- makePositionsTable (1 / 2) pat
   forM_ rows $ \row -> putStrLn $ fold $ intersperse "\t" row
 
 makeRoleTable ::
@@ -96,18 +100,43 @@ makeRolesTable calcRoleAbil pat = do
   pure $ headerRow : (uncurry playerRow <$> M.toList pabs)
   where
     headerRow :: [String]
-    headerRow = "Name" : "" : ((\(p, r) -> show p <> "-" <> show r) <$> relevantRoles)
+    headerRow = "Name" : "" : (show <$> relevantRoles)
 
     playerPs :: (P.Poss, PlayerAttrs) -> m [Maybe Double]
     playerPs (poss, pas) = traverse (playerRoleAbility poss pas) relevantRoles
 
-    playerRoleAbility :: P.Poss -> PlayerAttrs -> (P.Pos, RoleName) -> m (Maybe Double)
-    playerRoleAbility poss pas (pos, rn) = do
+    playerRoleAbility :: P.Poss -> PlayerAttrs -> RoleName -> m (Maybe Double)
+    playerRoleAbility poss pas rn = do
+      let playerRoles = foldMap (fromMaybe mempty . (`M.lookup` positionRoles)) poss
       let r = role rn
       ab <- roleAbility r pas
       pure $ do
-        guard $ poss `P.canPlay` pos
+        guard $ rn `S.member` playerRoles
         Just $ calcRoleAbil ab
 
     playerRow :: T.Text -> [Maybe Double] -> [String]
     playerRow name abils = T.unpack name : "" : (maybe "" show <$> abils)
+
+makePositionsTable :: forall m. (MonadFail m) => Double -> PlayerAttrsTbl -> m [[String]]
+makePositionsTable sndWgt pat = do
+  pabs <- traverse playerPs pat
+  pure $ headerRow : (uncurry playerRow <$> M.toList pabs)
+  where
+    headerRow :: [String]
+    headerRow = "Name" : "" : fold (L.intersperse [""] (fmap show <$> P.positions))
+
+    playerRow :: T.Text -> [[Maybe Double]] -> [String]
+    playerRow name abils = T.unpack name : "" : fold (L.intersperse [""] (fmap (maybe "" show) <$> abils))
+
+    playerPs :: (P.Poss, PlayerAttrs) -> m [[Maybe Double]]
+    playerPs (poss, pas) = traverse (traverse (playerPositionAbility poss pas)) P.positions
+
+    playerPositionAbility :: P.Poss -> PlayerAttrs -> P.Pos -> m (Maybe Double)
+    playerPositionAbility poss pas pos = do
+      let rns = positionRoles M.! pos -- safe...
+      let rs = role <$> S.toList rns
+      pabs <- traverse (`roleAbility` pas) rs
+      let scores = weightedMean sndWgt <$> pabs
+      pure $ do
+        guard $ poss `P.canPlay` pos
+        Just $ maximum scores
