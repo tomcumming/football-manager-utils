@@ -1,0 +1,32 @@
+cabal-version:      3.4
+name:               football-manager-utils
+version:            0.1.0.0
+
+executable football-manager-utils
+    main-is:          Main.hs
+    ghc-options: -Wall
+    default-extensions:
+        OverloadedStrings
+        LambdaCase
+        MultiWayIf
+        RecordWildCards
+        DerivingStrategies
+        DerivingVia
+    build-depends:
+        base ^>=4.19.1.0,
+        containers,
+        mtl,
+        text,
+        directory,
+        filepath,
+        time
+    hs-source-dirs:   exe
+    default-language: GHC2021
+    other-modules:
+        FM.Maths
+        FM.Position
+        FM.Import
+        FM.Import.Shared
+        FM.Import.League
+        FM.Import.Stats
+        FM.Import.Attrs
