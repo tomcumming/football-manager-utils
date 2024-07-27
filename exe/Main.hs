@@ -1,4 +1,4 @@
-module Main where
+module Main (main) where
 
 import Control.Category ((>>>))
 import Data.Bifunctor (second)
@@ -8,20 +8,19 @@ import Data.Functor ((<&>))
 import Data.List qualified as List
 import Data.List.NonEmpty qualified as NE
 import Data.Map.Strict qualified as M
+import Data.Maybe (fromMaybe)
+import Data.Number.Erf (erf)
 import Data.Sequence qualified as Seq
 import Data.Set qualified as S
 import Data.Text qualified as T
 import Data.Time (Day)
-import Data.Time.Format.ISO8601 (iso8601ParseM)
+import FM.Data (YearData (..), clubPointsZScore, divisionStandards, groupYearsDataByDivision, loadYears, makeAttrStandards, minutesInPositions, zscoreAttrs)
+import FM.Import (readTable)
 import FM.Import.Attrs qualified as Attrs
-import FM.Import.League qualified as League
-import FM.Import.Shared (Uid)
 import FM.Import.Stats qualified as Stats
-import FM.Maths (weightedMean, weightedStdev)
+import FM.Maths (asZScore, weightedMean, weightedStdev)
 import FM.Position qualified as Pos
-import System.Directory (listDirectory)
 import System.Environment (getArgs)
-import System.FilePath (takeBaseName, (</>))
 
 main :: IO ()
 main =
@@ -30,6 +29,7 @@ main =
     ["important", root] -> printImportantAttrs root
     ["test-individual", root, posg] -> testIndividualFit root (T.pack posg)
     ["test-team", root, posg] -> testTeamFit root (T.pack posg)
+    "players" : root : player : leagueNames -> printPlayersReport root player (leagueNames <&> T.pack)
     args -> putStrLn $ "Unexpected args: " <> show args
 
 -- | Scores attributes transformed to league stdev space
@@ -43,205 +43,151 @@ scoreAttributes posg attrs =
 
 testIndividualFit :: FilePath -> T.Text -> IO ()
 testIndividualFit root posg = do
-  folders <- listDirectory root
-  yearData <- traverse (loadYear root) folders <&> M.fromList
-  let leagueStds = leagueStandardAttrs yearData
-
-  let teamPoints = foldMap makeRelativePoints . yrLeagues <$> yearData
+  yearsData <- loadYears root
+  let leagueStds = divisionStandards yearsData
+  let teamPoints = clubPointsZScore yearsData
+  let rows =
+        M.toList yearsData
+          & concatMap
+            ( \(date, YearData {..}) ->
+                M.intersectionWith
+                  (,)
+                  yrStats
+                  yrAttrs
+                  & M.elems
+                  & fmap (date,)
+            )
 
   posgPoss <-
     List.find (fst >>> (== posg)) Pos.positionGroups
       & maybe (fail $ "Unknown pos group: " <> show posg) pure
       & fmap snd
 
+  let inPos =
+        rows
+          & fmap
+            ( \(date, (stats, attrs)) ->
+                ((date, minutesInPositions posgPoss stats), (stats, attrs))
+            )
+          & filter (\((_, mins), _) -> mins > 0)
+
   putStrLn "Date\tClub\tPoints\tScore"
 
-  forM_ (M.toList yearData) $ \(date, YearData {..}) -> do
-    let inPos =
-          yrStats
-            <&> minutesInPositions posgPoss
-            & M.filter (fst >>> (> 0))
-    forM_ (M.toList inPos) $ \(uid, (_w, Stats.Player {..})) -> do
-      let attrs = leagueRelativeAttributes leagueStds plDivision (yrAttrs M.! uid)
-      let pts = (teamPoints M.! date) M.! plClub
-      let score = scoreAttributes posg attrs
-      putStrLn $
-        fold
-          [ show date,
-            "\t",
-            T.unpack plClub,
-            "\t",
-            show pts,
-            "\t",
-            show score
-          ]
+  forM_ inPos $ \((date, _mins), (stats, attrs)) -> do
+    let divStd = leagueStds M.! Stats.plDivision stats
+    let rattrs = zscoreAttrs divStd attrs
+    let score = scoreAttributes posg rattrs
+    let pts = (teamPoints M.! date) M.! Stats.plClub stats
+    putStrLn $
+      fold $
+        List.intersperse
+          "\t"
+          [show date, T.unpack $ Stats.plClub stats, show pts, show score]
 
 testTeamFit :: FilePath -> T.Text -> IO ()
 testTeamFit root posg = do
-  folders <- listDirectory root
-  yearData <- traverse (loadYear root) folders <&> M.fromList
-  let leagueStds = leagueStandardAttrs yearData
-  let teamPoints = foldMap makeRelativePoints . yrLeagues <$> yearData
+  yearsData <- loadYears root
+  let leagueStds = divisionStandards yearsData
+  let teamPoints = clubPointsZScore yearsData
+  let rows =
+        M.toList yearsData
+          & concatMap
+            ( \(date, YearData {..}) ->
+                M.intersectionWith
+                  (,)
+                  yrStats
+                  yrAttrs
+                  & M.elems
+                  & fmap (date,)
+            )
 
   posgPoss <-
     List.find (fst >>> (== posg)) Pos.positionGroups
       & maybe (fail $ "Unknown pos group: " <> show posg) pure
       & fmap snd
 
+  let inPos =
+        rows
+          & fmap
+            ( \(date, (stats, attrs)) ->
+                ((date, minutesInPositions posgPoss stats), (stats, attrs))
+            )
+          & filter (\((_, mins), _) -> mins > 0)
+          & fmap
+            ( \((date, mins), (stats, attrs)) ->
+                ((date, (Stats.plDivision stats, Stats.plClub stats)), Seq.singleton ((mins, stats), attrs))
+            )
+          & M.fromListWith (<>)
+
   putStrLn "Date\tClub\tPoints\tScore"
 
-  forM_ (M.toList yearData) $ \(date, YearData {..}) -> do
-    let inPos =
-          yrStats
-            <&> minutesInPositions posgPoss
-            & M.filter (fst >>> (> 0))
+  forM_ (M.toList inPos) $ \((date, (division, club)), clubRows) -> do
+    let divStd = leagueStds M.! division
 
-    let teamAttrs =
-          M.toList inPos
-            <&> ( \(uid, (w, Stats.Player {..})) ->
-                    let attrs = leagueRelativeAttributes leagueStds plDivision (yrAttrs M.! uid)
-                     in M.singleton plClub $
-                          Seq.singleton
-                            ( scoreAttributes posg attrs,
-                              w
-                            )
-                )
-            & M.unionsWith (<>)
-            & fmap (toList >>> NE.fromList >>> weightedMean)
+    let maybeScore =
+          clubRows
+            & fmap
+              ( \((mins, _stats), attrs) ->
+                  let rattrs = zscoreAttrs divStd attrs
+                   in (scoreAttributes posg rattrs, mins)
+              )
+            & toList
+            & NE.nonEmpty
+            & fmap weightedMean
 
-    forM_ (M.toList teamAttrs) $ \(name, meanSum) -> do
-      let pts = (teamPoints M.! date) M.! name
+    let pts = (teamPoints M.! date) M.! club
 
-      putStrLn $
-        fold
-          [ show date,
-            "\t",
-            T.unpack name,
-            "\t",
-            show pts,
-            "\t",
-            show meanSum
-          ]
+    case maybeScore of
+      Nothing -> pure ()
+      Just score ->
+        putStrLn $
+          fold $
+            List.intersperse
+              "\t"
+              [show date, T.unpack club, show pts, show score]
 
-data YearData = YearData
-  { yrLeagues :: M.Map FilePath (M.Map T.Text League.Team),
-    yrStats :: M.Map Uid Stats.Player,
-    yrAttrs :: M.Map Uid (Attrs.Attrs Int)
-  }
-
-loadYear :: FilePath -> String -> IO (Day, YearData)
-loadYear root folder = do
-  let path = root </> folder
-  date :: Day <- iso8601ParseM folder
-  yrLeagues <- loadLeagues path
-  yrStats <- Stats.readPlayers (path </> "stats.html")
-  yrAttrs <- Attrs.readPlayers (path </> "attrs.html")
-  pure (date, YearData {..})
-
-loadLeagues :: FilePath -> IO (M.Map FilePath (M.Map T.Text League.Team))
-loadLeagues root =
-  listDirectory root
-    >>= (filter (List.isPrefixOf "l") >>> pure)
-    >>= traverse go
-    >>= (fold >>> pure)
-  where
-    go :: FilePath -> IO (M.Map FilePath (M.Map T.Text League.Team))
-    go path = League.readLeague (root </> path) <&> M.singleton (takeBaseName path)
-
-minutesInPositions :: Pos.Positions -> Stats.Player -> (Double, Stats.Player)
-minutesInPositions poss pl@Stats.Player {plPositions, plMinutes} = (k * realToFrac plMinutes, pl)
-  where
-    k =
-      realToFrac (S.size (S.intersection poss plPositions))
-        / realToFrac (S.size plPositions)
-
--- | Convert divisions into points relative top of the table
-makeRelativePoints :: forall f. (Functor f, Foldable f) => f League.Team -> f Double
-makeRelativePoints teams =
-  (/ realToFrac top)
-    . realToFrac
-    . League.lgPoints
-    <$> teams
-  where
-    top = maximum $ League.lgPoints <$> teams
-
-leagueStandardAttrs ::
-  (Foldable t) =>
-  t YearData ->
-  M.Map T.Text (Attrs.Attrs (Double, Double))
-leagueStandardAttrs =
-  toList
-    >>> fmap doYear
-    >>> M.unionsWith (M.unionWith (<>))
-    >>> fmap (fmap (toList >>> NE.fromList >>> weightedStdev))
-  where
-    doYear :: YearData -> M.Map T.Text (Attrs.Attrs (Seq.Seq (Double, Double)))
-    doYear YearData {yrAttrs, yrStats} =
-      M.toList yrAttrs
-        & fmap
-          ( \(uid, attrs) ->
-              let Stats.Player {plMinutes, plDivision} = yrStats M.! uid
-               in M.singleton
-                    plDivision
-                    $ fmap (realToFrac >>> (,realToFrac plMinutes) >>> Seq.singleton) attrs
-          )
-        & M.unionsWith (M.unionWith (<>))
-
-leagueRelativeAttributes ::
+-- | Differences between positions
+--   Returns: League -> PosGroup -> ...
+leaguePositionDifferences ::
   M.Map T.Text (Attrs.Attrs (Double, Double)) ->
-  T.Text ->
-  Attrs.Attrs Int ->
-  Attrs.Attrs Double
-leagueRelativeAttributes divStds division =
-  M.mapWithKey
-    ( \a i ->
-        let x = realToFrac i
-            (m, d) = divStd M.! a
-         in (x - m) / d
-    )
+  M.Map Day YearData ->
+  M.Map T.Text (M.Map T.Text (Attrs.Attrs (Double, Double)))
+leaguePositionDifferences lgeStds = groupYearsDataByDivision >>> fmap doDivision
   where
-    divStd = divStds M.! division
+    doDivision ::
+      Seq.Seq (Stats.Player, Attrs.Attrs Int) ->
+      M.Map T.Text (Attrs.Attrs (Double, Double))
+    doDivision divData = M.fromList Pos.positionGroups <&> doPosition divData
 
-relativeAttrsData ::
-  FilePath ->
-  IO [(T.Text, M.Map T.Text (Attrs.Attrs (Double, Double)))]
-relativeAttrsData root = do
-  folders <- listDirectory root
-  yearsData <- traverse (loadYear root) folders <&> M.fromList
-  let leagueStds = leagueStandardAttrs yearsData
-
-  let doPositionGroup poss =
-        toList yearsData
-          & fmap (\YearData {yrStats, yrAttrs} -> M.intersectionWith (,) yrStats yrAttrs)
-          & foldMap (toList >>> Seq.fromList)
-          & fmap
-            ( \(pl, attrs) ->
-                M.singleton
-                  (Stats.plDivision pl)
-                  $ Seq.singleton
-                    ( minutesInPositions poss pl & fst,
-                      leagueRelativeAttributes leagueStds (Stats.plDivision pl) attrs
-                    )
-            )
-          & M.unionsWith (<>)
-          & fmap
-            ( fmap (\(w, attrs) -> fmap ((,w) >>> Seq.singleton) attrs)
-                >>> M.unionsWith (<>)
-                >>> fmap (toList >>> NE.fromList >>> weightedStdev)
-            )
-
-  Pos.positionGroups & fmap (second doPositionGroup) & pure
+    doPosition ::
+      Seq.Seq (Stats.Player, Attrs.Attrs Int) ->
+      Pos.Positions ->
+      Attrs.Attrs (Double, Double)
+    doPosition divData poss =
+      divData
+        & fmap
+          ( \(stats, attrs) ->
+              zscoreAttrs (lgeStds M.! Stats.plDivision stats) attrs
+                <&> (,minutesInPositions poss stats)
+          )
+        & fmap (fmap Seq.singleton)
+        & M.unionsWith (<>)
+        & fmap (toList >>> NE.nonEmpty >>> fromMaybe (error "nonEmpty leaguePositionStandards"))
+        & fmap weightedStdev
 
 printRelativeAttrsReport :: FilePath -> IO ()
 printRelativeAttrsReport root = do
-  posGroupsData <- relativeAttrsData root
+  yearsData <- loadYears root
+  let lgeStds = divisionStandards yearsData
+  let posDiffs = leaguePositionDifferences lgeStds yearsData
 
   putStr "Division"
   forM_ Attrs.attrNames $ \name -> putStr ("\t" <> T.unpack name)
   putStrLn ""
 
-  forM_ posGroupsData $ \(posName, divs) -> do
+  forM_ Pos.positionGroups $ \(posName, _) -> do
     putStrLn $ T.unpack posName
+    let divs = fmap (M.! posName) posDiffs
     forM_ (M.toList divs) $ \(division, attrs) -> do
       putStr $ T.unpack division
       forM_ Attrs.attrNames $ \n -> putStr ("\t" <> show (attrs M.! n & fst))
@@ -249,25 +195,109 @@ printRelativeAttrsReport root = do
 
 printImportantAttrs :: FilePath -> IO ()
 printImportantAttrs root = do
-  posGroupsData <- relativeAttrsData root
-  let summary =
-        posGroupsData
+  yearsData <- loadYears root
+  let lgeStds = divisionStandards yearsData
+  let posDiffs = leaguePositionDifferences lgeStds yearsData
+
+  let averagedMeans =
+        posDiffs
+          & M.elems
+          & fmap (fmap (fmap (fst >>> Seq.singleton)))
+          & M.unionsWith (M.unionWith (<>))
           & fmap
-            ( second
-                ( fmap (fmap (fst >>> Seq.singleton))
-                    >>> M.unionsWith (<>)
-                    >>> fmap (\xs -> sum xs / realToFrac (length xs))
+            ( fmap
+                ( fmap (,1)
+                    >>> toList
+                    >>> NE.nonEmpty
+                    >>> fromMaybe (error "nonEmpty printImportAttrs")
+                    >>> weightedMean
                 )
             )
+
   let topAttrs (m :: M.Map T.Text Double) =
         M.toList m
           & List.sortOn (snd >>> negate)
           & take 11
           & fmap fst
-  let important = summary & fmap (second topAttrs)
-  forM_ important $ \(name, attrs) -> do
+  let important = averagedMeans <&> topAttrs
+  forM_ (Pos.positionGroups <&> fst) $ \name -> do
+    let attrs = important M.! name
     putStr (T.unpack name)
     forM_ attrs $ \attr -> putStr ("\t" <> T.unpack attr)
+    putStrLn ""
+
+phi :: Double -> Double
+phi z = (1 + erf (z / sqrt 2)) / 2
+
+printPlayersReport :: FilePath -> FilePath -> [T.Text] -> IO ()
+printPlayersReport root playersPath leagueNames = do
+  yearsData <- loadYears root
+  playerTable <- readTable playersPath
+  playerData <-
+    traverse
+      ( \table -> do
+          let name = table M.! "Name"
+          pos <- table M.! "Position" & (T.unpack >>> Pos.readPositions)
+          attrs <- Attrs.readAttrs table
+          M.singleton name (pos, attrs) & pure
+      )
+      playerTable
+      <&> M.unions
+
+  let divStds =
+        groupYearsDataByDivision yearsData
+          & M.filterWithKey (\k _ -> k `elem` leagueNames)
+          & fold
+          & fmap (\(stats, attrs) -> (attrs, Stats.plMinutes stats & realToFrac))
+          & makeAttrStandards
+
+  let divisionPlayers =
+        groupYearsDataByDivision yearsData
+          & M.filterWithKey (\k _ -> k `elem` leagueNames)
+          & fold
+          & fmap (second (zscoreAttrs divStds))
+
+  let posgScores =
+        Pos.positionGroups
+          & fmap
+            ( \(posg, poss) ->
+                ( posg,
+                  divisionPlayers
+                    & fmap (\(stats, attrs) -> (scoreAttributes posg attrs, minutesInPositions poss stats))
+                    & toList
+                    & NE.nonEmpty
+                    & fromMaybe (error "nonEmpty printPlayersReport")
+                    & weightedStdev
+                )
+            )
+          & M.fromList
+
+  putStr "Name"
+  forM_ Pos.positions $ \posg -> do
+    putStr "\t"
+    forM_ posg $ show >>> ("\t" <>) >>> putStr
+  putStrLn ""
+
+  forM_ (M.toList playerData) $ \(name, (poss, attrs)) -> do
+    putStr $ T.unpack name
+    forM_ Pos.positions $ \posss -> do
+      putStr "\t"
+      forM_ posss $ \pos ->
+        if
+          | S.notMember pos poss -> putStr "\t"
+          | otherwise -> do
+              posgName <-
+                List.find (snd >>> elem pos) Pos.positionGroups
+                  & maybe (fail "Can't lookup position") (fst >>> pure)
+              scoreStds <-
+                (posgScores M.!? posgName)
+                  & maybe (fail "Can't lookup pos group stds") pure
+
+              let rattrs = zscoreAttrs divStds attrs
+              let score = scoreAttributes posgName rattrs
+              let zscore = asZScore scoreStds score
+              let percentile = phi zscore
+              putStr ("\t" <> show percentile)
     putStrLn ""
 
 -- Generated from 3 years data, perhaps just generate each time we need?

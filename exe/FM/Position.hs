@@ -34,7 +34,8 @@ data Pos = Pos
 
 positions :: [[Pos]]
 positions =
-  [ [Pos D L, Pos D C, Pos D R],
+  [ [Pos GK C],
+    [Pos D L, Pos D C, Pos D R],
     [Pos DM L, Pos DM C, Pos DM R],
     [Pos M L, Pos M C, Pos M R],
     [Pos AM L, Pos AM C, Pos AM R],

@@ -10,3 +10,6 @@ weightedStdev xs = (m, sqrt (sum (uncurry f <$> xs) / sum (snd <$> xs)))
   where
     m = weightedMean xs
     f x w = (x - m) ** 2 * w
+
+asZScore :: (Double, Double) -> Double -> Double
+asZScore (m, s) x = (x - m) / s

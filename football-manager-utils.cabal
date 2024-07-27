@@ -19,10 +19,12 @@ executable football-manager-utils
         text,
         directory,
         filepath,
-        time
+        time,
+        erf
     hs-source-dirs:   exe
     default-language: GHC2021
     other-modules:
+        FM.Data
         FM.Maths
         FM.Position
         FM.Import
