@@ -7,10 +7,14 @@ module FM.Data
     zscoreAttrs,
     clubPointsZScore,
     minutesInPositions,
+    correlationData,
+    correlationMeanScores,
+    correlationScores,
   )
 where
 
 import Control.Category ((>>>))
+import Data.Bifunctor (second)
 import Data.Foldable (fold, toList)
 import Data.Function ((&))
 import Data.Functor ((<&>))
@@ -27,8 +31,9 @@ import FM.Import.Attrs qualified as Attrs
 import FM.Import.League qualified as League
 import FM.Import.Shared
 import FM.Import.Stats qualified as Stats
-import FM.Maths (asZScore, weightedStdev)
+import FM.Maths (asZScore, weightedMean, weightedStdev)
 import FM.Position qualified as Pos
+import Math.Regression.Simple qualified as RS
 import System.Directory (listDirectory)
 import System.FilePath (takeBaseName, (</>))
 
@@ -152,3 +157,53 @@ minutesInPositions poss Stats.Player {plPositions, plMinutes} = k * realToFrac p
     k =
       realToFrac (S.size (S.intersection poss plPositions))
         / realToFrac (S.size plPositions)
+
+correlationData ::
+  FilePath ->
+  IO (M.Map T.Text (M.Map T.Text (Attrs.Attrs (RS.Fit RS.V2))))
+correlationData root = do
+  yearsData <- loadYears root
+  let divGroups = groupYearsDataByDivision yearsData
+
+  Pos.positionGroups
+    & fmap
+      ( second $ \poss ->
+          divGroups
+            & fmap
+              ( \rows ->
+                  rows
+                    & fmap
+                      ( \(stats, attrs) ->
+                          let mins = minutesInPositions poss stats
+                           in attrs
+                                & fmap (\val -> Seq.singleton (realToFrac val, Stats.plRating stats, mins))
+                      )
+                    & M.unionsWith (<>)
+                    & fmap
+                      (RS.linearWithWeights id)
+              )
+      )
+    & M.fromList
+    & pure
+
+correlationMeanScores ::
+  M.Map T.Text (M.Map T.Text (Attrs.Attrs (RS.Fit RS.V2))) ->
+  M.Map T.Text (Attrs.Attrs Double)
+correlationMeanScores =
+  correlationScores
+    >>> fmap (fmap (fmap ((,1) >>> Seq.singleton)))
+    >>> fmap (M.unionsWith (<>))
+    >>> fmap (fmap (toList >>> NE.fromList >>> weightedMean >>> max 0))
+
+correlationScores ::
+  M.Map T.Text (M.Map T.Text (Attrs.Attrs (RS.Fit RS.V2))) ->
+  M.Map T.Text (M.Map T.Text (Attrs.Attrs Double))
+correlationScores = fmap score & fmap & fmap
+  where
+    score :: RS.Fit RS.V2 -> Double
+    score
+      ( RS.Fit
+          { fitParams = RS.V2 slope _off,
+            fitErrors = RS.V2 slopeErr _
+          }
+        ) = slope / sqrt slopeErr

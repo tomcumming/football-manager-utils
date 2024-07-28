@@ -8,13 +8,13 @@ import Data.Functor ((<&>))
 import Data.List qualified as List
 import Data.List.NonEmpty qualified as NE
 import Data.Map.Strict qualified as M
-import Data.Maybe (fromMaybe)
+import Data.Maybe (catMaybes, fromMaybe)
 import Data.Number.Erf (erf)
 import Data.Sequence qualified as Seq
 import Data.Set qualified as S
 import Data.Text qualified as T
 import Data.Time (Day)
-import FM.Data (YearData (..), clubPointsZScore, divisionStandards, groupYearsDataByDivision, loadYears, makeAttrStandards, minutesInPositions, zscoreAttrs)
+import FM.Data (YearData (..), clubPointsZScore, correlationData, correlationMeanScores, correlationScores, divisionStandards, groupYearsDataByDivision, loadYears, makeAttrStandards, minutesInPositions, zscoreAttrs)
 import FM.Import (readTable)
 import FM.Import.Attrs qualified as Attrs
 import FM.Import.Stats qualified as Stats
@@ -29,6 +29,7 @@ main =
     ["important", root] -> printImportantAttrs root
     ["test-individual", root, posg] -> testIndividualFit root (T.pack posg)
     ["test-team", root, posg] -> testTeamFit root (T.pack posg)
+    ["correlation", root] -> printCorrelationReport root
     "players" : root : player : leagueNames -> printPlayersReport root player (leagueNames <&> T.pack)
     args -> putStrLn $ "Unexpected args: " <> show args
 
@@ -41,11 +42,21 @@ scoreAttributes posg attrs =
   where
     imps = importantAttrs M.! posg
 
+scoreCorrelation :: M.Map T.Text (Attrs.Attrs Double) -> T.Text -> Attrs.Attrs Double -> Double
+scoreCorrelation corr posg attrs =
+  M.intersectionWith
+    (*)
+    (corr M.! posg)
+    attrs
+    & sum
+
 testIndividualFit :: FilePath -> T.Text -> IO ()
 testIndividualFit root posg = do
+  corr <- correlationData root <&> correlationMeanScores
+
   yearsData <- loadYears root
   let leagueStds = divisionStandards yearsData
-  let teamPoints = clubPointsZScore yearsData
+  -- let teamPoints = clubPointsZScore yearsData
   let rows =
         M.toList yearsData
           & concatMap
@@ -76,8 +87,10 @@ testIndividualFit root posg = do
   forM_ inPos $ \((date, _mins), (stats, attrs)) -> do
     let divStd = leagueStds M.! Stats.plDivision stats
     let rattrs = zscoreAttrs divStd attrs
-    let score = scoreAttributes posg rattrs
-    let pts = (teamPoints M.! date) M.! Stats.plClub stats
+    -- let score = scoreAttributes posg rattrs
+    let score = scoreCorrelation corr posg rattrs
+    -- let pts = (teamPoints M.! date) M.! Stats.plClub stats
+    let pts = Stats.plRating stats
     putStrLn $
       fold $
         List.intersperse
@@ -231,6 +244,7 @@ phi z = (1 + erf (z / sqrt 2)) / 2
 
 printPlayersReport :: FilePath -> FilePath -> [T.Text] -> IO ()
 printPlayersReport root playersPath leagueNames = do
+  corr <- correlationData root <&> correlationMeanScores
   yearsData <- loadYears root
   playerTable <- readTable playersPath
   playerData <-
@@ -257,13 +271,15 @@ printPlayersReport root playersPath leagueNames = do
           & fold
           & fmap (second (zscoreAttrs divStds))
 
+  let scoreFn = scoreCorrelation corr
+
   let posgScores =
         Pos.positionGroups
           & fmap
             ( \(posg, poss) ->
                 ( posg,
                   divisionPlayers
-                    & fmap (\(stats, attrs) -> (scoreAttributes posg attrs, minutesInPositions poss stats))
+                    & fmap (\(stats, attrs) -> (scoreFn posg attrs, minutesInPositions poss stats))
                     & toList
                     & NE.nonEmpty
                     & fromMaybe (error "nonEmpty printPlayersReport")
@@ -272,7 +288,7 @@ printPlayersReport root playersPath leagueNames = do
             )
           & M.fromList
 
-  putStr "Name"
+  putStr "Name\tMax"
   forM_ Pos.positions $ \posg -> do
     putStr "\t"
     forM_ posg $ show >>> ("\t" <>) >>> putStr
@@ -280,25 +296,71 @@ printPlayersReport root playersPath leagueNames = do
 
   forM_ (M.toList playerData) $ \(name, (poss, attrs)) -> do
     putStr $ T.unpack name
-    forM_ Pos.positions $ \posss -> do
-      putStr "\t"
-      forM_ posss $ \pos ->
-        if
-          | S.notMember pos poss -> putStr "\t"
-          | otherwise -> do
-              posgName <-
-                List.find (snd >>> elem pos) Pos.positionGroups
-                  & maybe (fail "Can't lookup position") (fst >>> pure)
-              scoreStds <-
-                (posgScores M.!? posgName)
-                  & maybe (fail "Can't lookup pos group stds") pure
 
-              let rattrs = zscoreAttrs divStds attrs
-              let score = scoreAttributes posgName rattrs
-              let zscore = asZScore scoreStds score
-              let percentile = phi zscore
-              putStr ("\t" <> show percentile)
+    let posPercentiles =
+          Pos.positions
+            & ( fmap
+                  ( \posss ->
+                      fmap
+                        ( \pos ->
+                            if
+                              | S.notMember pos poss -> Nothing
+                              | otherwise ->
+                                  let posgName =
+                                        List.find (snd >>> elem pos) Pos.positionGroups
+                                          & maybe (error "Can't lookup position") fst
+                                      scoreStds =
+                                        (posgScores M.!? posgName)
+                                          & fromMaybe (error "Can't lookup pos group stds")
+
+                                      rattrs = zscoreAttrs divStds attrs
+                                      score = scoreFn posgName rattrs
+                                      zscore = asZScore scoreStds score
+                                   in phi zscore & Just
+                        )
+                        posss
+                  )
+              )
+
+    let maxPercentile = concatMap catMaybes posPercentiles & maximum
+    putStr ("\t" <> show maxPercentile)
+
+    forM_ posPercentiles $ \posss -> do
+      putStr "\t"
+      forM_ posss $ \case
+        Nothing -> putStr "\t"
+        Just p -> putStr ("\t" <> show p)
     putStrLn ""
+
+printCorrelationReport :: FilePath -> IO ()
+printCorrelationReport root = do
+  cdata <- correlationData root
+  let corrs = correlationScores cdata
+  let means = correlationMeanScores cdata
+
+  forM_ Pos.positionGroups $ \(posg, _poss) -> do
+    let pdata = corrs M.! posg
+
+    putStrLn (T.unpack posg)
+    ("Division" : (S.toList Attrs.attrNames <&> T.unpack))
+      & List.intersperse "\t"
+      & fold
+      & putStrLn
+
+    let posMeans = means M.! posg
+
+    ("-" : (S.toList Attrs.attrNames & fmap ((posMeans M.!) >>> show)))
+      & List.intersperse "\t"
+      & fold
+      & putStrLn
+
+    forM_ (M.toList pdata) $ \(division, rows) -> do
+      ( T.unpack division
+          : (S.toList Attrs.attrNames & fmap ((rows M.!) >>> show))
+        )
+        & List.intersperse "\t"
+        & fold
+        & putStrLn
 
 -- Generated from 3 years data, perhaps just generate each time we need?
 importantAttrs :: M.Map T.Text (S.Set T.Text)

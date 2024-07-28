@@ -20,7 +20,8 @@ executable football-manager-utils
         directory,
         filepath,
         time,
-        erf
+        erf,
+        regression-simple
     hs-source-dirs:   exe
     default-language: GHC2021
     other-modules:

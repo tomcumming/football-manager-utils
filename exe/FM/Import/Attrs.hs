@@ -1,4 +1,4 @@
-module FM.Import.Attrs (Attrs, readPlayers, readAttrs, attrNames) where
+module FM.Import.Attrs (Attrs, readPlayers, readAttrs, attrNames, keeperAttrs) where
 
 import Control.Category ((>>>))
 import Control.Monad ((>=>))
@@ -87,3 +87,8 @@ attrNames =
       "Aer",
       "Acc"
     ]
+
+keeperAttrs :: S.Set T.Text
+keeperAttrs =
+  S.fromList
+    ["Ref", "Aer", "Han", "1v1", "Cmd", "Kic", "Com", "Thr", "TRO", "Pun", "Ecc"]
